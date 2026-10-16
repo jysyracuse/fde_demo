@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+data/out/
+data/sf_id_map.json
+data/app.db*
+# private: docs, agent memory and decision log stay local (user, 2026-10-16)
+docs/
+.audit/
+CLAUDE.md
+.claude/
+data/

@@ -1,0 +1,27 @@
+[project]
+name = "arfollow"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic>=0.40",
+    "mcp>=1.2",
+    "pydantic>=2.8",
+    "python-dotenv>=1.0",
+    "requests>=2.32",
+    "slack-bolt>=1.21",
+    "slack-sdk>=3.33",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
+
+[tool.ruff]
+line-length = 100
+lint.select = ["E", "F", "W"]
+lint.per-file-ignores = { "scripts/accept/*.py" = ["E501"] }  # docstrings quote HANDOFF verbatim
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
