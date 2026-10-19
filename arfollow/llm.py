@@ -17,6 +17,7 @@ MODELS = {
     "classify_reply": ("deepseek", "deepseek-chat"),
     "brief": ("deepseek", "deepseek-chat"),
     "investigate": ("deepseek", "deepseek-chat"),
+    "decide_action": ("deepseek", "deepseek-chat"),  # scripts/eval_actions.py
 }
 
 

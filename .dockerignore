@@ -1,0 +1,11 @@
+.env
+.git
+.venv
+data
+docs
+.audit
+.claude
+CLAUDE.md
+**/__pycache__
+.pytest_cache
+.ruff_cache

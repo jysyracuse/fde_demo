@@ -5,7 +5,7 @@ Usage: uv run python -m arfollow.run [--offline] [--llm] [--agent] [--post] [--l
 import argparse
 from collections import Counter
 
-from . import config, rules, store, sync
+from . import config, review, rules, store, sync
 
 
 def main() -> None:
@@ -28,6 +28,7 @@ def main() -> None:
         from . import llm_steps
         print("LLM reply labels:", llm_steps.classify_replies(conn))
         rules.link_messages(conn, billing)  # re-link so rules use the validated LLM intents
+    print("Cases closed (no longer overdue):", review.close_settled_cases(conn, billing))
     followups = rules.build_followups(conn, billing)
     rules.save_followups(conn, followups)
     if args.llm:

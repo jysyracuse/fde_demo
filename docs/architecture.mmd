@@ -1,0 +1,65 @@
+%% AR follow-up architecture (current, 2026-10-16). Source of truth: docs/ONTOLOGY.md
+%% Render: npx @mermaid-js/mermaid-cli -i docs/architecture.mmd -o architecture.png
+flowchart TB
+    subgraph SRC["Sources (read-only)"]
+        direction LR
+        SF[("Salesforce<br/>accounts, renewals,<br/>cases, calls")]
+        BILL[("billing.db<br/>invoices, lines, payments,<br/>charges, credit notes")]
+        INBOX[("inbox<br/>customer replies")]
+    end
+
+    subgraph L1["Layer 1: rules, no LLM"]
+        direction LR
+        SYNC["sync + entity match<br/>≥ 2 signals or human queue"]
+        RULES["detect overdue / failed charge<br/>signals → action → rank<br/>balance net of credit notes"]
+        SYNC --> RULES
+    end
+
+    subgraph L2["Layer 2: LLM steps"]
+        direction LR
+        CLS["reply classifier<br/>intent + promise date"]
+        BRF["cited brief<br/>per follow-up"]
+        V2{{"validator<br/>cites resolve, numbers<br/>in cited records"}}
+        CLS --> V2
+        BRF --> V2
+    end
+
+    subgraph L3["Layer 3: agent, disputes only"]
+        direction LR
+        AG["agent loop<br/>≤ 8 rounds, ≤ 60k tokens"]
+        MCP["MCP server, read-only<br/>9 tools"]
+        CALC["calculate<br/>code tool, exact cents"]
+        V3{{"validator<br/>cites and numbers seen<br/>in this run's tool results"}}
+        AG <-->|tool calls| MCP
+        AG <--> CALC
+        AG --> V3
+    end
+
+    subgraph HR["Human review in Slack"]
+        direction LR
+        CARD["card: evidence, brief,<br/>investigation, draft"]
+        BTN["Approve / Edit /<br/>Change action / Hold"]
+        CHK{{"check_numbers"}}
+        DEC[("decisions, outbox, audit<br/>append-only")]
+        DM["simulated customer<br/>inbox (DM)"]
+        ROLE["@ role owner"]
+        CARD --> BTN --> CHK --> DEC
+        DEC -->|reminder| DM
+        DEC -->|internal action| ROLE
+    end
+
+    SF --> SYNC
+    BILL --> SYNC
+    INBOX --> SYNC
+    CLS -.->|validated intent| RULES
+    RULES -->|58 follow-ups| BRF
+    RULES -->|8 disputes| AG
+    MCP -.->|mode=ro| BILL
+    RULES --> CARD
+    V2 --> CARD
+    V3 --> CARD
+
+    classDef src fill:#eef,stroke:#669
+    classDef check fill:#fee,stroke:#a44
+    class SF,BILL,INBOX src
+    class V2,V3,CHK check

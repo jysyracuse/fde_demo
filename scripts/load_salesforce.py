@@ -1,7 +1,10 @@
 """Load data/out/salesforce.json into the Developer Edition org.
 
-Idempotent: first deletes every record from a previous run (Accounts with Site = 'ardemo' and
-their children), then inserts fresh. This is the only code path that writes to Salesforce.
+Incremental by default: accounts already loaded (by data/sf_id_map.json) keep their Salesforce
+Ids and records; accounts in the org but not in the current set are deleted with their children;
+new accounts are inserted. Works because generator sets are nested (same ref -> same data).
+--rebuild deletes every record from a previous run (Accounts with Site = 'ardemo' and their
+children) and inserts fresh. This is the only code path that writes to Salesforce.
 
 Writes data/sf_id_map.json (generator ref -> Salesforce Id). That file is for evaluation only;
 the runtime system must link records through entity matching (step 3), not through this map.
@@ -9,7 +12,8 @@ the runtime system must link records through entity matching (step 3), not throu
 --update-descriptions patches only Account.Description in place (keeps every Salesforce Id, so
 decisions and Slack cards that cite them stay traceable). Needs data/sf_id_map.json.
 
-Usage: python scripts/load_salesforce.py [--delete-only] [--update-descriptions] [--dry-run]
+Usage: python scripts/load_salesforce.py [--rebuild] [--delete-only] [--update-descriptions]
+                                         [--dry-run]
 """
 import argparse
 import json
@@ -30,11 +34,18 @@ def clean(fields: dict) -> dict:
             if k not in ("ref", "contact_ref") and not k.startswith("_") and v is not None}
 
 
-def delete_existing(sf: SalesforceClient) -> None:
-    for obj, filt in [("Task", "Account.Site"), ("Case", "Account.Site"),
-                      ("Opportunity", "Account.Site"), ("Contact", "Account.Site"),
-                      ("Account", "Site")]:
-        ids = [r["Id"] for r in sf.query(f"SELECT Id FROM {obj} WHERE {filt} = '{MARKER}'")]
+def delete_existing(sf: SalesforceClient, account_ids: list[str] | None = None) -> None:
+    """Delete demo accounts and their children: all of them, or only `account_ids`."""
+    if account_ids is None:
+        acc, child = f"Site = '{MARKER}'", f"Account.Site = '{MARKER}'"
+    elif not account_ids:
+        return
+    else:
+        quoted = ",".join(f"'{i}'" for i in account_ids)
+        acc, child = f"Id IN ({quoted})", f"AccountId IN ({quoted})"
+    for obj in ("Task", "Case", "Opportunity", "Contact", "Account"):
+        cond = acc if obj == "Account" else child
+        ids = [r["Id"] for r in sf.query(f"SELECT Id FROM {obj} WHERE {cond}")]
         if ids:
             print(f"Deleting {len(ids):4d} {obj}")
             sf.delete_many(ids)
@@ -42,6 +53,7 @@ def delete_existing(sf: SalesforceClient) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--rebuild", action="store_true", help="delete every demo record, reload")
     ap.add_argument("--delete-only", action="store_true")
     ap.add_argument("--update-descriptions", action="store_true",
                     help="patch Account.Description in place; no delete, no insert")
@@ -64,11 +76,25 @@ def main() -> None:
                 for a in accounts]
         print(f"Updated {sf.update_many('Account', rows)} Account descriptions")
         return
-    delete_existing(sf)
-    if args.delete_only:
-        return
-
+    map_path = config.ROOT / "data" / "sf_id_map.json"
     id_map: dict[str, str] = {}
+    if args.rebuild or args.delete_only:
+        delete_existing(sf)
+        if args.delete_only:
+            map_path.unlink(missing_ok=True)
+            return
+    else:
+        old = json.loads(map_path.read_text()) if map_path.exists() else {}
+        in_org = {r["Id"] for r in sf.query(f"SELECT Id FROM Account WHERE Site = '{MARKER}'")}
+        keep = {a["ref"] for a in accounts if old.get(a["ref"]) in in_org}
+        kept_ids = {old[r] for r in keep}
+        delete_existing(sf, sorted(in_org - kept_ids))
+        # keep the map entries of kept accounts and their contacts (CON-<acc>-<n>)
+        id_map = {k: v for k, v in old.items()
+                  if k in keep or (k.startswith("CON-") and f"ACC-{k.split('-')[1]}" in keep)}
+        print(f"Kept {len(keep)} Account (already loaded)")
+        accounts = [a for a in accounts if a["ref"] not in keep]
+
     acc_ids = sf.create_many("Account", [clean(a["fields"]) for a in accounts])
     for a, sid in zip(accounts, acc_ids):
         id_map[a["ref"]] = sid
@@ -102,9 +128,8 @@ def main() -> None:
     children("cases", "Case", "ContactId")
     children("tasks", "Task", "WhoId")
 
-    out = config.ROOT / "data" / "sf_id_map.json"
-    out.write_text(json.dumps(id_map, indent=2) + "\n")
-    print(f"Wrote {out}")
+    map_path.write_text(json.dumps(id_map, indent=2) + "\n")
+    print(f"Wrote {map_path}")
 
 
 if __name__ == "__main__":

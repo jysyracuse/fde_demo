@@ -5,9 +5,10 @@ __pycache__/
 data/out/
 data/sf_id_map.json
 data/app.db*
-# private: docs, agent memory and decision log stay local (user, 2026-10-16)
-docs/
+# private: docs that name a company, the decision log (has an email) and local settings (user, 2026-10-20)
+docs/HANDOFF.md
+docs/PORTFOLIO.md
+docs/RETRO.md
 .audit/
-CLAUDE.md
-.claude/
+.claude/settings.local.json
 data/

@@ -48,6 +48,22 @@ CREATE TABLE IF NOT EXISTS followups (
     slack_ts       TEXT                     -- this follow-up's card
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS cases (          -- a hand-off that outlives the day's follow-up
+    id           INTEGER PRIMARY KEY,
+    customer_id  TEXT NOT NULL,
+    followup_id  TEXT NOT NULL REFERENCES followups(id),  -- the approved card that opened it
+    action       TEXT NOT NULL,
+    role         TEXT NOT NULL,
+    owner        TEXT NOT NULL,             -- Slack user who holds it until the handback
+    opened_by    TEXT NOT NULL,             -- the approver, told when it comes back
+    opened_at    TEXT NOT NULL,
+    evidence     TEXT NOT NULL,             -- JSON record IDs known at hand-off; new ID = new card
+    wait_until   TEXT,                      -- date agreed with the customer; no card before it
+    outcome      TEXT,
+    closed_at    TEXT
+) STRICT;
+CREATE UNIQUE INDEX IF NOT EXISTS one_open_case ON cases (customer_id) WHERE closed_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS decisions (
     id           INTEGER PRIMARY KEY,
     ts           TEXT NOT NULL,

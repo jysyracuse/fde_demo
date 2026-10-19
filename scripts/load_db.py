@@ -25,11 +25,13 @@ def load(data_dir: Path, db_path: Path) -> dict[str, int]:
         conn.executescript((config.ROOT / "db" / "billing.sql").read_text())
         for table in TABLES:
             rows = data[table]
+            counts[table] = len(rows)
+            if not rows:  # e.g. --demo has no credit notes
+                continue
             cols = [f"{c}_cents" if c in MONEY else c for c in rows[0]]
             conn.executemany(
                 f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
                 [[round(v * 100) if k in MONEY else v for k, v in r.items()] for r in rows])
-            counts[table] = len(rows)
         conn.execute("INSERT INTO meta VALUES ('as_of', ?)", (data["as_of"],))
     conn.close()
     return counts

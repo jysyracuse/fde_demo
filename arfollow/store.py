@@ -1,4 +1,5 @@
-"""SQLite connections: billing.db (source, opened read-only) and app.db (the system's own store)."""
+"""SQLite connections: billing.db (source, opened read-only), app.db (the system's own store),
+org.db (role directory)."""
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -22,6 +23,18 @@ def app(path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript((config.ROOT / "db" / "app.sql").read_text())
     return conn
+
+
+def org(path: Path | None = None) -> sqlite3.Connection:
+    conn = sqlite3.connect(path or config.ORG_DB)
+    conn.row_factory = sqlite3.Row
+    conn.executescript((config.ROOT / "db" / "org.sql").read_text())
+    return conn
+
+
+def role_user(conn: sqlite3.Connection, role: str) -> str | None:
+    row = conn.execute("SELECT slack_user FROM roles WHERE role = ?", (role,)).fetchone()
+    return row[0] if row else None
 
 
 def now() -> str:

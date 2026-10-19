@@ -40,6 +40,17 @@ CATEGORIES: dict[str, tuple[str, int]] = {
     "standard_overdue":    ("standard_reminder", 10),
     "healthy":             ("none", 42),
 }
+# Named sets, each a subset of the next: a customer keeps its ID, name and records in every set,
+# so Salesforce can grow from one set to the next by inserting only the new accounts.
+_OVERDUE = [c for c in CATEGORIES if c != "healthy"]
+SETS: dict[str, dict[str, int]] = {
+    "minimal": {"standard_overdue": 1, "invoice_dispute": 1, "chronic_late": 1,
+                "renewal_in_progress": 1, "healthy": 4},
+    "small":   {**{c: 1 for c in _OVERDUE}, "healthy": 4},                          # 11
+    "medium":  {**{c: 2 for c in _OVERDUE}, "healthy": 6},                          # 20
+    "large":   {**{c: 4 for c in _OVERDUE}, "standard_overdue": 5, "healthy": 21},  # 50
+    "full":    {c: n for c, (_, n) in CATEGORIES.items()},                          # 100
+}
 OVERDUE_DAYS = {
     "card_expired": (3, 20), "invoice_dispute": (10, 45), "renewal_in_progress": (5, 30),
     "paid_unreconciled": (5, 25), "chronic_late": (35, 75), "churn_risk": (10, 35),
@@ -127,8 +138,10 @@ class Customer:
 
 
 class Generator:
-    def __init__(self, seed: int, as_of: date):
+    def __init__(self, seed: int, as_of: date, mix: dict[str, int] | None = None):
+        self.seed = seed
         self.rng = random.Random(seed)
+        self.mix = mix or SETS["full"]
         self.as_of = as_of
         self.customers: list[Customer] = []
         self.inv_lines: list[dict] = []
@@ -143,18 +156,20 @@ class Generator:
 
     # ------------------------------------------------------------------ build
     def run(self) -> None:
-        cats = [c for c, (_, n) in CATEGORIES.items() for _ in range(n)]
-        self.rng.shuffle(cats)
-        names = self._company_names(len(cats))
-        for i, (cat, name) in enumerate(zip(cats, names)):
-            self.customers.append(self._customer(i, cat, name))
-        for c in self.customers:
+        # (category, variant k) -> fixed slot in the full set; each customer draws from its own
+        # RNG, so its data does not depend on which other customers are in the set.
+        slots = [(c, k) for c, (_, n) in CATEGORIES.items() for k in range(n)]
+        self.rng.shuffle(slots)
+        names = self._company_names(len(slots))
+        pos = {s: i for i, s in enumerate(slots)}
+        for i, cat, k in sorted((pos[(c, k)], c, k) for c, n in self.mix.items()
+                                for k in range(n)):
+            self.rng = random.Random(f"{self.seed}:{i}")
+            c = self._customer(i, cat, names[i])
+            self.customers.append(c)
             self._schedule_invoices(c)
-        self._assign_invoice_ids()
-        per_cat_idx: dict[str, int] = {}
-        for c in self.customers:
-            k = per_cat_idx.get(c.category, 0)
-            per_cat_idx[c.category] = k + 1
+            for n, inv in enumerate(c.invoices):
+                inv["id"] = f"INV-{(1000 + i) * 100 + n}"
             self._finance(c, k)
             self._usage(c, k)
             self._crm(c, k)
@@ -225,12 +240,6 @@ class Generator:
             c.invoices.append({"issue_date": issue, "due_date": due, "unpaid": unpaid,
                                "seats_billed": c.seats, "target": issue == issue0
                                and c.target_days is not None})
-
-    def _assign_invoice_ids(self) -> None:
-        allinv = [(inv["issue_date"], c.cid, inv) for c in self.customers for inv in c.invoices]
-        allinv.sort(key=lambda t: (t[0], t[1]))
-        for n, (_, _, inv) in enumerate(allinv):
-            inv["id"] = f"INV-{104001 + n}"
 
     # ---------------------------------------------------------------- finance
     def _finance(self, c: Customer, k: int) -> None:
@@ -310,16 +319,16 @@ class Generator:
         elif c.category == "paid_unreconciled":
             c.notes.append("customer says paid; no payment record yet (in transit)")
 
-        if c.category == "invoice_dispute" and target and k < 2:
+        if c.category == "invoice_dispute" and target and k in (1, 2):
             over = money((target["seats_billed"] - c.seats) * c.seat_price)
-            amount = over if k == 0 else money(over / 2)
+            amount = over if k == 1 else money(over / 2)
             self.credit_notes.append({
                 "id": f"CN-{c.idx:04d}", "customer_id": c.cid, "invoice_id": target["id"],
                 "amount": amount,
-                "reason": "Seat count correction" if k == 0 else "Partial goodwill credit",
+                "reason": "Seat count correction" if k == 1 else "Partial goodwill credit",
                 "issued_at": self.as_of - timedelta(days=r.randint(1, 5))})
             c.notes.append("credit note covers the full over-billing; CRM case still open"
-                           if k == 0 else "credit note covers half the over-billing")
+                           if k == 1 else "credit note covers half the over-billing")
 
         # customer-level billing record
         if c.payment_method == "card":
@@ -333,7 +342,8 @@ class Generator:
 
     def _charge(self, c: Customer, inv: dict, when: date, result: str, code: str | None):
         self.charges.append({
-            "id": f"CH-{len(self.charges) + 1:05d}", "customer_id": c.cid,
+            "id": f"CH-{c.idx:03d}{sum(ch['customer_id'] == c.cid for ch in self.charges):03d}",
+            "customer_id": c.cid,
             "invoice_id": inv["id"], "attempted_at": when, "result": result,
             "failure_code": code})
 
@@ -557,7 +567,8 @@ class Generator:
             body, promise = self._render(key, c, target, received.date())
             sig_name = c.sf_name if r.random() < 0.5 else c.name
             body += f"\n\n{contact['FirstName']}\n{sig_name}"
-            mid = f"MSG-{len(self.inbox) + 1:04d}"
+            mid = f"MSG-{c.idx:03d}{sum(m['id'][4:7] == f'{c.idx:03d}'
+                                        for m in self.inbox)}"
             subject = (f"RE: Invoice {target['id']} overdue" if target and r.random() < 0.7
                        else f"RE: Your {COMPANY} account")
             self.inbox.append({"id": mid, "received_at": received.isoformat(),
@@ -679,7 +690,7 @@ class Generator:
             "salesforce.json": {"as_of": self.as_of, "marker_site": "ardemo",
                                 "accounts": self.sf_accounts},
             "inbox.json": self.inbox,
-            "labels.json": {"as_of": self.as_of, "seed": SEED, "customers": self.labels},
+            "labels.json": {"as_of": self.as_of, "seed": self.seed, "customers": self.labels},
             "inbox_labels.json": self.inbox_labels,
         }
 
@@ -695,15 +706,17 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=SEED)
     ap.add_argument("--as-of", type=date.fromisoformat, default=AS_OF)
     ap.add_argument("--out", type=Path, default=DATA_DIR)
+    ap.add_argument("--set", choices=SETS, default="full", help="named data set (default full)")
     args = ap.parse_args()
 
-    g = Generator(args.seed, args.as_of)
+    g = Generator(args.seed, args.as_of, SETS[args.set])
     g.run()
     args.out.mkdir(parents=True, exist_ok=True)
     for name, obj in g.outputs().items():
         (args.out / name).write_text(json.dumps(obj, indent=2, default=_default,
                                                 ensure_ascii=False) + "\n")
-    print(f"Wrote {len(g.customers)} customers, {len(g.inbox)} inbox messages to {args.out}")
+    print(f"Set {args.set}: wrote {len(g.customers)} customers, {len(g.inbox)} inbox messages "
+          f"to {args.out}")
 
 
 if __name__ == "__main__":

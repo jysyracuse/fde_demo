@@ -1,0 +1,12 @@
+services:
+  listener:  # Slack buttons; keep running
+    build: .
+    env_file: .env
+    volumes: ["./data:/app/data"]
+    restart: unless-stopped
+  daily:     # one run: docker compose run --rm daily
+    build: .
+    env_file: .env
+    volumes: ["./data:/app/data"]
+    command: ["python", "-m", "arfollow.run", "--llm", "--agent", "--post"]
+    profiles: ["jobs"]

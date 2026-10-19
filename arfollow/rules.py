@@ -127,6 +127,8 @@ def build_followups(conn: sqlite3.Connection, billing: sqlite3.Connection) -> li
     for r in conn.execute("SELECT * FROM messages WHERE customer_id IS NOT NULL "
                           "ORDER BY received_at"):
         replies[r["customer_id"]].append(dict(r))
+    cases = {r["customer_id"]: dict(r) for r in conn.execute(
+        "SELECT * FROM cases WHERE closed_at IS NULL")}
 
     out = []
     for cid, invoices in overdue.items():
@@ -167,9 +169,12 @@ def build_followups(conn: sqlite3.Connection, billing: sqlite3.Connection) -> li
         promises = [t for t in crm.get("Task", []) if "payment promise" in t["Subject"]]
         broken = [t for t in promises if (m := re.search(r"by (\d{4}-\d{2}-\d{2})",
                   t.get("Description") or "")) and date.fromisoformat(m[1]) < d_today]
-        if broken or len(late[cid]) >= CHRONIC_LATE_COUNT:
+        case = cases.get(cid)
+        agreed_passed = bool(case and case["wait_until"] and case["wait_until"] < today)
+        if broken or agreed_passed or len(late[cid]) >= CHRONIC_LATE_COUNT:
             sig["chronic_late"] = {"late_payments": len(late[cid]),
-                                   "broken_promises": [t["Id"] for t in broken]}
+                                   "broken_promises": [t["Id"] for t in broken],
+                                   **({"agreed_date_passed": True} if agreed_passed else {})}
             ev += [t["Id"] for t in broken] + late[cid][-3:]
         fails = [failed[i["id"]] for i in invoices if i["id"] in failed]
         if fails:
@@ -179,13 +184,16 @@ def build_followups(conn: sqlite3.Connection, billing: sqlite3.Connection) -> li
                 sig["card_expired"] = c["card_expiry"]
         ev += [m["id"] for m in replies[cid]]
 
+        ev = list(dict.fromkeys(ev))
+        if case and not agreed_passed and set(ev) <= set(json.loads(case["evidence"])):
+            continue  # handed off and nothing new: the owner has it, the digest lists the case
         action = next((a for s, a in PRECEDENCE if s in sig), "standard_reminder")
         amount = sum(i["balance_cents"] for i in invoices)
         days = (d_today - date.fromisoformat(invoices[0]["due_date"])).days
         out.append({"id": f"FU-{today}-{cid}", "as_of": today, "customer_id": cid,
                     "account_id": acc, "action": action, "amount_cents": amount,
                     "currency": c["currency"], "days_overdue": days, "signals": sig,
-                    "evidence": list(dict.fromkeys(ev)),
+                    "evidence": ev,
                     **draft(action, c, crm, invoices, sig),
                     "_ctx": (c, crm, invoices),
                     "_score": amount * (1 + days / 30) * (2 if c["plan"] == "Enterprise" else 1)})
@@ -228,13 +236,16 @@ def draft(action: str, c: dict, crm: dict, invoices: list[dict], sig: dict) -> d
                 "Verify against unapplied payments before any reminder.")
     elif action == "notify_account_owner" and (r := sig.get("open_renewal")):
         note = (f"Renewal in progress: {r['opportunity']} ({r['stage']}, closes {r['close']}). "
-                f"Notify AE {r['ae'] or 'unknown'}; hold dunning.")
+                f"Notify the account manager (AE on record: {r['ae'] or 'unknown'}); hold dunning.")
     elif action == "retention_handoff" and (r := sig.get("churn_risk")):
         note = (f"Churn risk (monthly active users {r['usage']}, cancel reply: "
-                f"{r['cancel_reply']}). Hand off to retention.")
+                f"{r['cancel_reply']}). Hand off to the Account Manager.")
     elif action == "escalate" and (r := sig.get("chronic_late")):
+        missed = " The payment date agreed at hand-off has passed." if r.get(
+            "agreed_date_passed") else ""
         note = (f"Chronic late payer ({r['late_payments']} late payments, "
-                f"{len(r['broken_promises'])} broken promise). Escalate to finance lead.")
+                f"{len(r['broken_promises'])} broken promise).{missed} "
+                "Escalate to the Billing Ops Manager.")
     else:
         note = f"{action.replace('_', ' ').capitalize()} (set by reviewer)."
     return {"draft_to": None, "draft_subject": None,
